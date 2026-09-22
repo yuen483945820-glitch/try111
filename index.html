@@ -105,7 +105,82 @@ const uncertaintySets={
 };
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button,.view').forEach(e=>e.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.view).classList.add('active');document.getElementById('pageTitle').textContent=titles[b.dataset.view]});
 document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{const q=b.dataset.q;b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('good','bad'));if(b.dataset.ok==='1'){b.classList.add('good');state.answered.add(q);document.getElementById('feedback').textContent=q==='1'?'正确。插值增加的是显示像素，不会增加独立测量信息；参数拟合应使用原始阵列数据。':'正确。高发射率表面能减少环境反射，并让不同金属使用统一的红外参数。'}else{b.classList.add('bad');document.getElementById('feedback').textContent=q==='1'?'插值点由原始测点计算得到，并不是传感器新测出的温度。':'表面涂层服务于辐射测温，不会把材料本身的导热系数人为提高。'}document.getElementById('progressText').textContent=state.answered.size+' / 2';document.getElementById('progressBar').style.width=(state.answered.size*50)+'%'});
-async function ask(q){if(!q.trim())return;const chat=document.getElementById('chat'),send=document.getElementById('send');chat.insertAdjacentHTML('beforeend','<div class="bubble user">'+escapeHtml(q)+'</div><div id="thinking" class="bubble bot loading">正在检索作品报告…</div>');send.disabled=true;chat.scrollTop=chat.scrollHeight;try{const response=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question:q})});const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');const refs=(data.sources||[]).map(s=>'<span class="source">'+escapeHtml(s.section)+'</span>').join('');document.getElementById('thinking').outerHTML='<div class="bubble bot">'+escapeHtml(data.answer)+'<div class="sources">'+refs+'</div></div>'}catch(error){document.getElementById('thinking').textContent='暂时无法完成文档检索：'+error.message}finally{send.disabled=false;chat.scrollTop=chat.scrollHeight}}
+// ==================== 1. 核心配置（在这里填你的真实 Key） ====================
+const SILICONFLOW_API_KEY = "sk-wqpsrcxrldcpqjstsvkzitorawrphewvhfardllunpuoftnp"; 
+const CURRENT_MODEL = "deepseek-ai/DeepSeek-V4-Flash"; 
+
+// ==================== 2. 物理实验“世界书”预设 ====================
+const WORLD_BOOK_PROMPT = `你是由华中科技大学等团队开发的“非接触式材料热物性实验系统”的专属 AI 助教。
+【实验核心规则】：
+1. 本实验基于 MLX90640 远红外热像传感器（32×24 像素阵列），非接触式测量材料的导热系数 k（一维稳态肋片法）与热扩散率 α（非稳态降温有限差分法）。
+2. 金属等材料表面统一喷涂/贴绝缘电工黑胶（发射率 ε 标定为 0.95），消除反射与接触热阻。
+3. 实验满足毕奥数 Bi = (h * r) / (2k) << 0.1，严格保证径向温差极小，符合一维轴向导热假设。
+4. 误差评定严格遵循 JJF 1059.1 (GUM) 标准，分为 A 类（重复测量散布）与 B 类（红外校准、尺寸测量等）合成不确定度。
+【回答要求】：用亲切、专业、符合物理竞赛评审标准的高水平口吻回答学生的实验疑问。`;
+
+// ==================== 3. 正则清洗与格式化 ====================
+function processResponseWithRegex(rawText) {
+  let text = rawText;
+  const thinkMatch = text.match(/<think>([\s\S]*?)<\/think>/);
+  let thinkHtml = "";
+  if (thinkMatch) {
+    const thinkContent = thinkMatch[1].trim();
+    thinkHtml = `<details style="margin-bottom:8px;padding:6px 10px;background:rgba(255,255,255,0.05);border-radius:6px;font-size:12px;color:#a0aec0;"><summary style="cursor:pointer;color:#63b3ed;">🧠 点击查看助教推导过程</summary><div style="margin-top:6px;line-height:1.5;white-space:pre-wrap;">${thinkContent}</div></details>`;
+    text = text.replace(/<think>[\s\S]*?<\/think>/, "").trim();
+  }
+  text = text.replace(/\$(.*?)\$/g, "<em>$1</em>");
+  text = text.replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>");
+  return thinkHtml + text;
+}
+
+// ==================== 4. 自动免密提问函数 ====================
+async function ask(q) {
+  if (!q || !q.trim()) return;
+  const chat = document.getElementById('chat');
+  const input = document.getElementById('chatInput');
+  
+  chat.insertAdjacentHTML('beforeend', '<div class="bubble user">' + escapeHtml(q) + '</div>');
+  if (input) input.value = '';
+  chat.scrollTop = chat.scrollHeight;
+
+  const loadingId = 'loading-' + Date.now();
+  chat.insertAdjacentHTML('beforeend', '<div class="bubble" id="' + loadingId + '">助教正在结合实验世界书思考中...</div>');
+  chat.scrollTop = chat.scrollHeight;
+
+  try {
+    const response = await fetch("https://api.siliconflow.cn/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + SILICONFLOW_API_KEY
+      },
+      body: JSON.stringify({
+        model: CURRENT_MODEL,
+        messages: [
+          { role: "system", content: WORLD_BOOK_PROMPT },
+          { role: "user", content: q }
+        ],
+        temperature: 0.5,
+        max_tokens: 1500
+      })
+    });
+
+    const data = await response.json();
+    const loadingEl = document.getElementById(loadingId);
+
+    if (data.choices && data.choices.length > 0) {
+      const rawReply = data.choices[0].message.content;
+      if (loadingEl) loadingEl.innerHTML = processResponseWithRegex(rawReply);
+    } else {
+      const err = data.message || "请求失败，请检查 API Key 或余额";
+      if (loadingEl) loadingEl.innerHTML = '<span style="color:#ff6b6b;">助教离线中：' + err + '</span>';
+    }
+  } catch (e) {
+    const loadingEl = document.getElementById(loadingId);
+    if (loadingEl) loadingEl.innerHTML = '<span style="color:#ff6b6b;">网络异常：' + e.message + '</span>';
+  }
+  chat.scrollTop = chat.scrollHeight;
+}
 document.querySelectorAll('[data-ask]').forEach(b=>b.onclick=()=>ask(b.dataset.ask));document.getElementById('send').onclick=()=>{ask(document.getElementById('chatInput').value);document.getElementById('chatInput').value=''};document.getElementById('chatInput').onkeydown=e=>{if(e.key==='Enter')document.getElementById('send').click()};
 function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function currentConfig(){return uncertaintySets[document.getElementById('property').value]}
